@@ -12,23 +12,13 @@ fn main() {
     }
 
     let process_name = &args[1];
-    let directory = if args.len() >= 3 {
-        args[2].clone()
-    } else {
-        env::current_dir()
-            .expect("Failed to get current directory")
-            .to_string_lossy()
-            .to_string()
-    };
-
-    // Normalize directory path
-    let directory = match fs::canonicalize(directory) {
+    let directory = args.get(2).map(|d| match fs::canonicalize(d) {
         Ok(p) => p.to_string_lossy().to_string(),
         Err(_) => {
-            eprintln!("Directory not found: {}", directory);
+            eprintln!("Directory not found: {}", d);
             exit(1);
         }
-    };
+    });
 
     // Get tmux panes
     let output = Command::new("tmux")
@@ -51,22 +41,28 @@ fn main() {
         }
 
         let (id, cmd, path) = (parts[0], parts[1], parts[2]);
-        let normalized_path = fs::canonicalize(path).ok()?.to_string_lossy().to_string();
 
-        if cmd == process_name && normalized_path.starts_with(&directory) {
-            Some(id.to_string())
-        } else {
-            None
+        if cmd != process_name {
+            return None;
         }
+
+        if let Some(ref dir) = directory {
+            let normalized_path = fs::canonicalize(path).ok()?.to_string_lossy().to_string();
+            if !normalized_path.starts_with(dir) {
+                return None;
+            }
+        }
+
+        Some(id.to_string())
     });
 
     let pane_id = match pane_id {
         Some(id) => id,
         None => {
-            eprintln!(
-                "No pane found running '{}' in '{}'",
-                process_name, directory
-            );
+            match directory {
+                Some(dir) => eprintln!("No pane found running '{}' in '{}'", process_name, dir),
+                None => eprintln!("No pane found running '{}'", process_name),
+            }
             exit(1);
         }
     };
