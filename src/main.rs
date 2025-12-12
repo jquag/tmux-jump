@@ -3,22 +3,75 @@ use std::env;
 use std::fs;
 use std::process::{Command, exit};
 
-fn main() {
-    let args: Vec<String> = env::args().collect();
+struct Args {
+    process_name: String,
+    directory: Option<String>,
+    keys: Option<String>,
+}
 
-    if args.len() < 2 {
-        eprintln!("Usage: tmux-jump <process> [directory]");
-        exit(1);
+fn parse_args() -> Args {
+    let args: Vec<String> = env::args().collect();
+    let mut process_name: Option<String> = None;
+    let mut directory: Option<String> = None;
+    let mut keys: Option<String> = None;
+
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            "-k" | "--keys" => {
+                if i + 1 < args.len() {
+                    keys = Some(args[i + 1].clone());
+                    i += 2;
+                } else {
+                    eprintln!("Error: --keys requires a value");
+                    exit(1);
+                }
+            }
+            "-d" | "--directory" => {
+                if i + 1 < args.len() {
+                    directory = Some(args[i + 1].clone());
+                    i += 2;
+                } else {
+                    eprintln!("Error: --directory requires a value");
+                    exit(1);
+                }
+            }
+            arg if arg.starts_with('-') => {
+                eprintln!("Unknown option: {}", arg);
+                exit(1);
+            }
+            _ => {
+                if process_name.is_none() {
+                    process_name = Some(args[i].clone());
+                }
+                i += 1;
+            }
+        }
     }
 
-    let process_name = &args[1];
-    let directory = args.get(2).map(|d| match fs::canonicalize(d) {
+    let process_name = match process_name {
+        Some(p) => p,
+        None => {
+            eprintln!("Usage: tmux-jump <process> [-d|--directory <dir>] [-k|--keys <keys>]");
+            exit(1);
+        }
+    };
+
+    let directory = directory.map(|d| match fs::canonicalize(&d) {
         Ok(p) => p.to_string_lossy().to_string(),
         Err(_) => {
             eprintln!("Directory not found: {}", d);
             exit(1);
         }
     });
+
+    Args { process_name, directory, keys }
+}
+
+fn main() {
+    let args = parse_args();
+    let process_name = &args.process_name;
+    let directory = args.directory;
 
     // Get tmux panes
     let output = Command::new("tmux")
@@ -89,7 +142,18 @@ fn main() {
         }
     };
 
+    if let Some(keys) = args.keys {
+        send_keys(&pane_id, &keys);
+    }
+
     switch_to_pane(&pane_id);
+}
+
+fn send_keys(pane_id: &str, keys: &str) {
+    Command::new("tmux")
+        .args(["send-keys", "-t", pane_id, keys])
+        .status()
+        .expect("Failed to send keys");
 }
 
 fn switch_to_pane(pane_id: &str) {
