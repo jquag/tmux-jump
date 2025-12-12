@@ -33,28 +33,50 @@ fn main() {
 
     let panes = String::from_utf8_lossy(&output.stdout);
 
-    // Find matching pane
-    let pane_id = panes.lines().find_map(|line| {
-        let parts: Vec<&str> = line.split('|').collect();
-        if parts.len() != 3 {
-            return None;
-        }
+    // Get current working directory for prioritization
+    let cwd = env::current_dir()
+        .ok()
+        .and_then(|p| fs::canonicalize(p).ok())
+        .map(|p| p.to_string_lossy().to_string());
 
-        let (id, cmd, path) = (parts[0], parts[1], parts[2]);
-
-        if cmd != process_name {
-            return None;
-        }
-
-        if let Some(ref dir) = directory {
-            let normalized_path = fs::canonicalize(path).ok()?.to_string_lossy().to_string();
-            if !normalized_path.starts_with(dir) {
+    // Collect all matching panes with their paths
+    let matching_panes: Vec<(String, String)> = panes
+        .lines()
+        .filter_map(|line| {
+            let parts: Vec<&str> = line.split('|').collect();
+            if parts.len() != 3 {
                 return None;
             }
-        }
 
-        Some(id.to_string())
-    });
+            let (id, cmd, path) = (parts[0], parts[1], parts[2]);
+
+            if cmd != process_name {
+                return None;
+            }
+
+            let normalized_path = fs::canonicalize(path).ok()?.to_string_lossy().to_string();
+
+            if let Some(ref dir) = directory {
+                if !normalized_path.starts_with(dir) {
+                    return None;
+                }
+            }
+
+            Some((id.to_string(), normalized_path))
+        })
+        .collect();
+
+    // Prioritize panes: exact CWD match > subdirectory of CWD > others
+    let pane_id = if let Some(ref cwd) = cwd {
+        matching_panes
+            .iter()
+            .find(|(_, path)| path == cwd)
+            .or_else(|| matching_panes.iter().find(|(_, path)| path.starts_with(cwd)))
+            .or_else(|| matching_panes.first())
+            .map(|(id, _)| id.clone())
+    } else {
+        matching_panes.first().map(|(id, _)| id.clone())
+    };
 
     let pane_id = match pane_id {
         Some(id) => id,
