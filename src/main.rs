@@ -1,4 +1,5 @@
 // src/main.rs
+use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::process::{Command, exit};
@@ -79,12 +80,15 @@ fn main() {
             "list-panes",
             "-a",
             "-F",
-            "#{pane_id}|#{pane_current_command}|#{pane_current_path}",
+            "#{pane_id}|#{pane_pid}|#{pane_current_path}",
         ])
         .output()
         .expect("Failed to run tmux");
 
     let panes = String::from_utf8_lossy(&output.stdout);
+
+    // Build process map once for fast lookups
+    let process_map = build_process_map();
 
     // Get current working directory for prioritization
     let cwd = env::current_dir()
@@ -101,9 +105,12 @@ fn main() {
                 return None;
             }
 
-            let (id, cmd, path) = (parts[0], parts[1], parts[2]);
+            let (id, pid, path) = (parts[0], parts[1], parts[2]);
 
-            if cmd != process_name {
+            // Get the foreground process command (child of the shell)
+            let full_cmd = get_foreground_cmd(pid, &process_map)?;
+
+            if !full_cmd.contains(process_name) {
                 return None;
             }
 
@@ -135,8 +142,8 @@ fn main() {
         Some(id) => id,
         None => {
             match directory {
-                Some(dir) => eprintln!("No pane found running '{}' in '{}'", process_name, dir),
-                None => eprintln!("No pane found running '{}'", process_name),
+                Some(dir) => println!("No pane found running '{}' in '{}'", process_name, dir),
+                None => println!("No pane found running '{}'", process_name),
             }
             exit(1);
         }
@@ -147,6 +154,48 @@ fn main() {
     }
 
     switch_to_pane(&pane_id);
+}
+
+/// Build a map of pid -> (ppid, command) from a single ps call
+fn build_process_map() -> HashMap<String, (String, String)> {
+    let output = Command::new("ps")
+        .args(["-e", "-o", "pid=,ppid=,args="])
+        .output()
+        .expect("Failed to run ps");
+
+    let ps_output = String::from_utf8_lossy(&output.stdout);
+    let mut map = HashMap::new();
+
+    for line in ps_output.lines() {
+        let parts: Vec<&str> = line.trim().splitn(3, ' ').collect();
+        if parts.len() >= 3 {
+            let pid = parts[0].trim().to_string();
+            let ppid = parts[1].trim().to_string();
+            let cmd = parts[2].trim().to_string();
+            map.insert(pid, (ppid, cmd));
+        }
+    }
+    map
+}
+
+/// Get the foreground process command by finding the leaf child process
+fn get_foreground_cmd(shell_pid: &str, process_map: &HashMap<String, (String, String)>) -> Option<String> {
+    // Find children of this pid
+    let children: Vec<&String> = process_map
+        .iter()
+        .filter(|(_, (ppid, _))| ppid == shell_pid)
+        .map(|(pid, _)| pid)
+        .collect();
+
+    let child_pid = children.first()?;
+
+    // Recursively find the leaf process
+    if let Some(deeper) = get_foreground_cmd(child_pid, process_map) {
+        return Some(deeper);
+    }
+
+    // Return this process's command
+    process_map.get(*child_pid).map(|(_, cmd)| cmd.clone())
 }
 
 fn send_keys(pane_id: &str, keys: &str) {
