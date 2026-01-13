@@ -89,6 +89,7 @@ fn main() {
 
     // Build process map once for fast lookups
     let process_map = build_process_map();
+    let self_pid = std::process::id().to_string();
 
     // Get current working directory for prioritization
     let cwd = env::current_dir()
@@ -107,10 +108,8 @@ fn main() {
 
             let (id, pid, path) = (parts[0], parts[1], parts[2]);
 
-            // Get the foreground process command (child of the shell)
-            let full_cmd = get_foreground_cmd(pid, &process_map)?;
-
-            if !full_cmd.contains(process_name) {
+            // Check if any process in the tree matches the process name
+            if !has_matching_process(pid, process_name, &process_map, &self_pid) {
                 return None;
             }
 
@@ -167,19 +166,27 @@ fn build_process_map() -> HashMap<String, (String, String)> {
     let mut map = HashMap::new();
 
     for line in ps_output.lines() {
-        let parts: Vec<&str> = line.trim().splitn(3, ' ').collect();
-        if parts.len() >= 3 {
-            let pid = parts[0].trim().to_string();
-            let ppid = parts[1].trim().to_string();
-            let cmd = parts[2].trim().to_string();
+        let trimmed = line.trim();
+        let mut tokens = trimmed.split_whitespace();
+        let pid = match tokens.next() {
+            Some(p) => p.to_string(),
+            None => continue,
+        };
+        let ppid = match tokens.next() {
+            Some(p) => p.to_string(),
+            None => continue,
+        };
+        // Collect remaining tokens as the command
+        let cmd: String = tokens.collect::<Vec<_>>().join(" ");
+        if !cmd.is_empty() {
             map.insert(pid, (ppid, cmd));
         }
     }
     map
 }
 
-/// Get the foreground process command by finding the leaf child process
-fn get_foreground_cmd(shell_pid: &str, process_map: &HashMap<String, (String, String)>) -> Option<String> {
+/// Check if any process in the tree (children of shell_pid) matches the process name
+fn has_matching_process(shell_pid: &str, process_name: &str, process_map: &HashMap<String, (String, String)>, self_pid: &str) -> bool {
     // Find children of this pid
     let children: Vec<&String> = process_map
         .iter()
@@ -187,15 +194,24 @@ fn get_foreground_cmd(shell_pid: &str, process_map: &HashMap<String, (String, St
         .map(|(pid, _)| pid)
         .collect();
 
-    let child_pid = children.first()?;
-
-    // Recursively find the leaf process
-    if let Some(deeper) = get_foreground_cmd(child_pid, process_map) {
-        return Some(deeper);
+    for child_pid in children {
+        // Skip our own process to avoid matching our command line arguments
+        if child_pid == self_pid {
+            continue;
+        }
+        // Check if this child's command matches
+        if let Some((_, cmd)) = process_map.get(child_pid) {
+            if cmd.contains(process_name) {
+                return true;
+            }
+        }
+        // Recursively check children
+        if has_matching_process(child_pid, process_name, process_map, self_pid) {
+            return true;
+        }
     }
 
-    // Return this process's command
-    process_map.get(*child_pid).map(|(_, cmd)| cmd.clone())
+    false
 }
 
 fn send_keys(pane_id: &str, keys: &str) {
