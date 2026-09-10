@@ -141,8 +141,8 @@ fn main() {
         Some(id) => id,
         None => {
             match directory {
-                Some(dir) => println!("No pane found running '{}' in '{}'", process_name, dir),
-                None => println!("No pane found running '{}'", process_name),
+                Some(dir) => eprintln!("No pane found running '{}' in '{}'", process_name, dir),
+                None => eprintln!("No pane found running '{}'", process_name),
             }
             exit(1);
         }
